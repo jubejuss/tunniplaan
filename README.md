@@ -284,20 +284,29 @@ asendus, ärajäänud tund, aegunud plaan. Sündmus ei ole muudatus, seega on ta
 (`.subst-box-event`). Kui klassil on samal päeval nii sündmus kui asendus, on kast punane,
 sest punast on siis päriselt midagi teatada.
 
-### Ettevaade
+### Nädalad ja ettevaade
 
-Aktusest on kasu ette teades, seega küsitakse sündmusi **14 päeva ette** (`ETTEVAATE_PAEVI`).
-Tulemus on kollane kast "Tulemas" nii õppekoha avalehel kui klassilehtedel, klassil ainult
-teda puudutavad sündmused.
+Iga klassi, õpetaja ja ruumi leht kannab **kolme nädalat** (`NADALAID`): jooksev ja kaks
+järgmist. Nädalate vahel liigutakse lehel nuppudega, kõik kolm on HTML-is olemas ja JS ainult
+peidab ja näitab. Ilma JS-ita on kõik kolm nähtaval. Nädalavahetusel loetakse jooksvaks
+järgmist nädalat. Päeva lahtris on kuupäev, tänane päev on märgitud, möödunud päevad on hallid.
 
-**Asendusi ette ei näidata.** Need muutuvad iga päev, seega oleks homne asendusteseis täna
-lihtsalt vale info. Ettevaatest võetakse ainult `event` read.
+**Igale nädalale valitakse oma tunniplaan** (`valiTunniplaan`): uusim, mille `datefrom` on
+hiljemalt selle nädala reedel. Kui kool avaldab uue plaani järgmisest esmaspäevast, näitab
+jooksev nädal veel vana. Erineva plaaniga nädalal on päises plaani nimi. Olemid, failid ja
+lingid tulevad jooksva nädala plaanist; teise plaani olemid leitakse id, siis nime järgi
+(`vaste`, `slugidPlaanile`).
 
-Hind: EduPage'i liides annab korraga ühe päeva, seega on see **üks POST päeva ja õppekoha
-kohta**. 14 päeva sees on kuni 10 tööpäeva, nädalavahetusi ei küsita, seega 20 lisapäringut
-jooksu kohta. Päringud käivad neljakaupa (`ETTEVAATE_KORRAGA`), kogu genereerimine võtab
-mõõdetuna 2,4 s. Kui see kunagi liiga koormavaks osutub, on `ETTEVAATE_PAEVI` vähendamine
-ainus vajalik muudatus.
+Asendusi ja sündmusi küsitakse **tänasest viimase nädala reedeni**, ühe POST-iga päeva ja
+õppekoha kohta: esmaspäeval 15 päeva, reedel 11. Möödunud päevi ei küsita. Päringud käivad
+neljakaupa (`KORRAGA`), ühe päeva viga jätab selle päeva tühjaks ega võta teisi ära.
+
+Iga nädala kohal on kast selle nädala muudatustega, rida kannab päeva ("E 07.09"). Kui ridu on
+üle seitsme (`KOKKU_ALATES`), jäävad esimesed seitse nähtavale ja ülejäänud avanevad
+"+ veel N muudatust" alt (`<details>`). Printimisel avatakse need automaatselt.
+
+Õppekoha avalehel on lisaks kollane kast "Tulemas" sündmustega **14 päeva ette**
+(`ETTEVAATE_PAEVI`), samast andmestikust, eraldi päringuid ei ole.
 
 Ühe päeva ebaõnnestumine ei võta teisi kaasa: viga püütakse päeva kaupa, puuduv päev jääb
 lihtsalt nimekirjast välja ja konsooli tuleb hoiatus. Ettevaade käib ka nädalavahetusel,
@@ -343,7 +352,6 @@ Praktiline järeldus: praegu sobib see Ingmarile näitamiseks ja uue plaani peal
 ## Mis on tegemata
 
 - Asendused ainult klassilehtedel. Õpetaja ja ruumi vaadete jaoks on vaja `mode=teachers` ja `mode=classrooms` päringuid. Parser ise töötab.
-- Genereeritakse ühe päeva seis. Otsustamata, kas näidata ka homset või kogu nädalat.
 - Paarid tuletatakse mehaaniliselt, mitte `durationperiods` järgi. See tähendab, et topelttunni silti näeb ka klass, kellel seal topelttundi ei ole.
 - Avaldatakse iga 5 min tagant uuesti, ka siis kui midagi ei muutunud. Muutuse tuvastamist ei ole.
   Pagesi 10 ehituse tunnis piir siia ei puutu – see kehtib ainult Pagesi enda ehitusele, mitte oma

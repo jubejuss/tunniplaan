@@ -12,14 +12,14 @@ Kaks osa. Esimene selgitab lihtsalt, kuidas asi töötab. Teine on avaldamise se
 
 1. **Kool teeb tunniplaani aSc-s**, nagu praegugi. aSc lükkab plaani EduPage'i.
 
-2. **Skript küsib EduPage'ilt andmed** – tunniplaani ja selle päeva asendused. Sisselogimist ei ole vaja, EduPage'i avalik liides annab kõik välja. Nii ei ole ka aSc lisalitsentsi vaja, mida koolil ei ole.
+2. **Skript küsib EduPage'ilt andmed** – tunniplaani ja asendused tänasest kaks nädalat ette. Sisselogimist ei ole vaja, EduPage'i avalik liides annab kõik välja. Nii ei ole ka aSc lisalitsentsi vaja, mida koolil ei ole.
 
 3. **Skript teisendab andmed** oma kujule: klassid, õpetajad, ruumid, tunnid, kellaajad.
    Arvutab õiged ajad – 40 min juhendatud üksiktund, 75 min topelttund, ülejäänu iseseisev töö.
 
 4. **Skript genereerib valmis HTML-lehed** kausta `dist/`: eraldi leht iga klassi, iga õpetaja ja iga ruumi jaoks, pluss avaleht. Mõlemale õppekohale (Viru ja Kiviõli tee 25) omaette komplekt.
 
-5. **Asendused pannakse peale:** punase äärega kast lehe ülal, tundidel punane joon all ja hüüumärk nurgas.
+5. **Asendused pannakse peale:** punase äärega kast lehe ülal, tundidel punane joon all ja hüüumärk nurgas. Leht näitab kolme nädalat, mille vahel saab liikuda.
 
 6. **Failid lähevad kooli kodulehele.** See samm on veel tegemata, vt II osa.
 

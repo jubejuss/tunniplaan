@@ -308,6 +308,10 @@ let currentView = null;
 // null tahendab, et asendusi ei kuvata.
 let SUBST_CELLS = null;
 
+// Nadala paevad kuupaevadega: massiiv viiest { date: '07.09', past, today }.
+// null tahendab, et tabel on ilma kuupaevadeta (vidin ise).
+let WEEK_DAYS = null;
+
 let SINGLE_LESSON_MINUTES = 40;
 let DOUBLE_LESSON_MINUTES = 75;
 
@@ -1131,17 +1135,59 @@ td.subst-remove { box-shadow: inset 0 -3px 0 #7f8c8d; }
 td.subst-add { box-shadow: inset 0 -3px 0 #27ae60; }
 td.subst-event { box-shadow: inset 0 -3px 0 #8e44ad; }
 
+/* Pikk muudatuste loetelu: ulejaanud read on "+ veel N" all */
+.subst-day { color: var(--color-text-muted); font-variant-numeric: tabular-nums; }
+details.subst-more summary {
+  cursor: pointer; color: var(--color-accent); font-weight: 600;
+  margin-top: 0.3rem; list-style: none;
+}
+details.subst-more summary::-webkit-details-marker { display: none; }
+details.subst-more summary:hover { text-decoration: underline; }
+details.subst-more summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+details.subst-more ul { margin-top: 0.3rem; }
+
+/* Nadalad: lehel on mitu, korraga on nahtav uks */
+.week[hidden] { display: none; }
+.week-head {
+  display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+  margin: 0.8rem 0 0.6rem 0;
+}
+.week-head h3 { margin: 0; font-size: 1rem; font-weight: 600; }
+.week-head h3:focus { outline: none; }
+.week-head h3:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.week-hint { color: var(--color-text-muted); font-weight: 400; font-size: 0.85rem; }
+.week-tt { color: var(--color-text-muted); font-size: 0.8rem; margin-left: auto; }
+.week-btn {
+  background: var(--color-bg-alt);
+  border: 1px solid var(--color-border);
+  border-radius: 3px; min-width: 2.2rem;
+  padding: 0.2rem 0.6rem;
+  font-family: inherit; font-size: 1rem; line-height: 1.2;
+  color: var(--color-text); cursor: pointer;
+}
+.week-btn:hover:not(:disabled) { background: #ececec; }
+.week-btn:disabled { opacity: 0.4; cursor: default; }
+.week-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+/* Paeva kuupaev, moodunud paev ja tanane paev */
+.day-date { display: block; font-size: 0.7rem; color: var(--color-text-muted); font-weight: 400; }
+/* Moodunud paev: hall, mitte labipaistev - labipaistvus soob kontrasti ara */
+tr.day-past .lesson { filter: grayscale(1); }
+tr.day-past td.day-cell { color: var(--color-text-muted); }
+tr.day-today td.day-cell { box-shadow: inset 4px 0 0 var(--color-accent); }
+
 @media print {
   .subst-box, .subst-box.subst-box-event { border-left-color: #000; background: #f0f0f0; }
   .subst-box.subst-box-event h3 { color: #000; }
   .subst-mark { color: #000; }
+  .week-btn { display: none; }
+  tr.day-past .lesson { filter: none; }
 }
 `;
 }
 
-// Genereerib tabeli HTML-i ühe vaate jaoks (type=class|teacher|room, id)
-// Annab tagasi HTML-i stringi (ainult <table>... osa + pealkirja)
-function buildTimetableHtml(type, id, slugs) {
+// Pealkiri ühe vaate jaoks (type=class|teacher|room, id): <h2> ja klassijuhataja.
+function buildTimetableTitle(type, id) {
   let title = '', subtitle = '';
   if (type === 'class') {
     const c = DB.classes[id];
@@ -1154,21 +1200,31 @@ function buildTimetableHtml(type, id, slugs) {
     title = DB.classrooms[id].name;
   }
 
+  let html = `<h2 class="timetable-title">${escapeHtml(title)}<\/h2>`;
+  if (subtitle) html += `<p class="timetable-subtitle">${escapeHtml(subtitle)}<\/p>`;
+  return html;
+}
+
+// Genereerib tabeli HTML-i ühe vaate jaoks (type=class|teacher|room, id)
+// Annab tagasi HTML-i stringi (pealkiri + <table>... osa)
+function buildTimetableHtml(type, id, slugs) {
+  return buildTimetableTitle(type, id) + buildTimetableTable(type, id, slugs);
+}
+
+// Ainult tabel, ilma pealkirjata. Generaator paneb ühele lehele mitu
+// nädalat ja pealkiri on neil ühine.
+function buildTimetableTable(type, id, slugs) {
   const { matrix } = buildWeekMatrix(type, id);
   const totalLessons = matrix.reduce((sum, day) =>
     sum + Object.values(day).reduce((s, arr) => s + arr.length, 0), 0);
 
-  let html = `<h2 class="timetable-title">${escapeHtml(title)}<\/h2>`;
-  if (subtitle) html += `<p class="timetable-subtitle">${escapeHtml(subtitle)}<\/p>`;
-
   if (totalLessons === 0) {
-    html += '<div class="empty-state">Sellele valikule ei vasta ükski tund.<\/div>';
-    return html;
+    return '<div class="empty-state">Sellele valikule ei vasta ükski tund.<\/div>';
   }
 
   const { cols, longCells } = buildColumnStructure();
 
-  html += '<table class="timetable"><thead>';
+  let html = '<table class="timetable"><thead>';
 
   // Pikkade aegade rida
   html += '<tr class="long-times"><th class="day-cell" rowspan="2"><\/th>';
@@ -1188,9 +1244,13 @@ function buildTimetableHtml(type, id, slugs) {
   html += '<\/tr><\/thead><tbody>';
 
   for (let d = 0; d < 5; d++) {
-    html += '<tr>';
+    const wd = WEEK_DAYS ? WEEK_DAYS[d] : null;
+    const rowCls = wd ? (wd.today ? ' class="day-today"' : wd.past ? ' class="day-past"' : '') : '';
+    html += `<tr${rowCls}>`;
     html += `<td class="day-cell"><span class="day-short">${DAYS[d].short}<\/span>` +
-      `<span class="day-long">${DAYS[d].long}<\/span><\/td>`;
+      `<span class="day-long">${DAYS[d].long}<\/span>` +
+      (wd ? `<span class="day-date">${escapeHtml(wd.date)}${wd.today ? ' · täna' : wd.past ? ' · möödas' : ''}<\/span>` : '') +
+      `<\/td>`;
 
     let i = 0;
     while (i < cols.length) {

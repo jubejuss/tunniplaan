@@ -9,6 +9,10 @@
 // Loeb EduPage'i avalikku JSON-liidest, teisendab andmed samasse kujju,
 // mida tunniplaan.html juba kasutab, ja kutsub valja selle enda
 // HTML-i genereerimise funktsioonid. Renderdust siin ei dubleerita.
+//
+// Iga klassi, opetaja ja ruumi leht kannab mitut nadalat (jooksev pluss
+// jargmised), mille vahel saab lehel liikuda. Iga nadal renderdatakse
+// sel nadalal kehtiva tunniplaaniga ja selle nadala asendustega.
 
 import { readFileSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -38,6 +42,22 @@ const KOOLID = {
 const SINGLE_MIN = process.env.TUND !== undefined ? Number(process.env.TUND) : 40;
 const DOUBLE_MIN = process.env.TOPELT !== undefined ? Number(process.env.TOPELT) : 75;
 
+// Mitu nadalat leht kannab: jooksev pluss jargmised. Kolm nadalat katab
+// kaks nadalat ette, sest osa asendusi on teada nadal ette.
+const NADALAID = 3;
+
+// Asenduste loetelu pakitakse kokku, kui ridu on rohkem kui nii palju:
+// esimesed jaavad nahtavale, ulejaanud avanevad "+ veel N" alt.
+const KOKKU_ALATES = 7;
+
+// Mitu paeva ette syndmusi avalehel loetletakse.
+const ETTEVAATE_PAEVI = 14;
+
+// Mitu paeva EduPage'ilt korraga kusitakse. Iga paev on eraldi POST.
+const KORRAGA = 4;
+
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
 // ---------------------------------------------------------------
 // EduPage
 // ---------------------------------------------------------------
@@ -45,9 +65,10 @@ const DOUBLE_MIN = process.env.TOPELT !== undefined ? Number(process.env.TOPELT)
 // Paringu tegemine, koos korduskatsetega, elab edupage-fetch.mjs-is.
 const edupage = edupagePost;
 
-// Leiab praegu kehtiva tunniplaani. NB! EduPage ei tagasta neid
-// kuupaeva jarjekorras, seega massiivi viimane element ei ole uusim.
-async function leiaViimaneTunniplaan(host) {
+// Koik oppeaasta tunniplaanid, kehtivuse alguse jarjekorras. NB! EduPage
+// ei tagasta neid kuupaeva jarjekorras, seega massiivi viimane element
+// ei ole uusim.
+async function laeTunniplaanid(host) {
   const aasta = new Date().getMonth() >= 7
     ? new Date().getFullYear()
     : new Date().getFullYear() - 1;
@@ -56,8 +77,16 @@ async function leiaViimaneTunniplaan(host) {
   const list = d?.r?.regular?.timetables || [];
   if (!list.length) throw new Error(`${host}: tunniplaane ei leitud`);
 
-  const sorted = [...list].sort((a, b) => a.datefrom.localeCompare(b.datefrom));
-  return sorted[sorted.length - 1];
+  return [...list].sort((a, b) => a.datefrom.localeCompare(b.datefrom));
+}
+
+// Nadalal kehtib see plaan, mille algus on hiljemalt nadala reedel,
+// ja neist uusim. Kui ukski nii vara ei alga, votame varaseima: parem
+// mingi plaan kui tuhi leht.
+function valiTunniplaan(tunniplaanid, nadal) {
+  const reede = nadal.paevad[4];
+  const sobivad = tunniplaanid.filter(t => t.datefrom <= reede);
+  return sobivad.length ? sobivad[sobivad.length - 1] : tunniplaanid[0];
 }
 
 async function laeAndmed(host, ttNum) {
@@ -170,15 +199,31 @@ function laeRenderdaja() {
   const tehas = new Function('document', 'window', 'alert', 'console', `
     ${src}
     return {
-      DB, buildIndexPage, buildTimetableHtml, wrapInHtmlPage, uniqueSlugs, getExportCss,
-      guessPeriodPairs,
+      DB, buildIndexPage, buildTimetableTitle, buildTimetableTable, wrapInHtmlPage,
+      uniqueSlugs, getExportCss, guessPeriodPairs,
       seaUksik:  v => { SINGLE_LESSON_MINUTES = v; },
       seaTopelt: v => { DOUBLE_LESSON_MINUTES = v; },
       seaAsendused: v => { SUBST_CELLS = v; },
+      seaNadal: v => { WEEK_DAYS = v; },
     };
   `);
 
   return tehas(doc, { print: noop }, noop, console);
+}
+
+// Uks renderdaja iga tunniplaani kohta: DB on renderdaja globaal, seega
+// ei saa kaht plaani samas eksemplaris hoida.
+async function laeRenderdajaPlaanile(host, tp) {
+  const T = await laeAndmed(host, tp.tt_num);
+  const R = laeRenderdaja();
+  teisendaDB(T, R.DB);
+  // Paarid tuleb tunniplaan.html-i enda loogikast, mitte siit uuesti
+  // kirjutatuna - muidu lahevad vidin ja genereeritud leht lahku.
+  R.guessPeriodPairs();
+  R.seaUksik(SINGLE_MIN);
+  R.seaTopelt(DOUBLE_MIN);
+  R.T = T;
+  return R;
 }
 
 // ---------------------------------------------------------------
@@ -205,8 +250,7 @@ function uuendatud() {
 
 // Riba index.html-i ulaossa: milline plaan, mis ajaga ja millal tehtud.
 // Ilma selleta ei saa vastuvotja aru, et tegu on hetketombega, mitte live-vaatega.
-function paiseRiba(kool, tp, lopp, kuupaev, aegunud) {
-  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function paiseRiba(kool, tp, lopp, kuupaev, viimanePaev, aegunud) {
   const hoiatus = aegunud
     ? `<div class="subst-box"><h3>Tähelepanu</h3>` +
       `<p style="margin:0">See tunniplaan kehtis kuni <strong>${esc(lopp)}</strong> ja on aegunud. ` +
@@ -216,42 +260,24 @@ function paiseRiba(kool, tp, lopp, kuupaev, aegunud) {
     `<p style="color:#666; font-size:0.85rem; margin:0 0 1rem 0">` +
     `${esc(kool.nimi)}<br>` +
     `Tunniplaan: ${esc(tp.text)}${lopp ? `, kehtiv kuni ${esc(lopp)}` : ''}<br>` +
-    `Asendused seisuga ${esc(kuupaev)}. Leht uuendatud ${esc(uuendatud())}.` +
+    `Asendused ja sündmused ${esc(kuupaev)} kuni ${esc(viimanePaev)}. ` +
+    `Leht uuendatud ${esc(uuendatud())}.` +
     `</p>`;
 }
 
 // ---------------------------------------------------------------
-// Asendused
+// Kuupaevad ja nadalad
 // ---------------------------------------------------------------
+
+const NADALAPAEV = ['E', 'T', 'K', 'N', 'R'];
+const KUUD = ['jaanuar', 'veebruar', 'märts', 'aprill', 'mai', 'juuni',
+  'juuli', 'august', 'september', 'oktoober', 'november', 'detsember'];
 
 // Esmaspaev = 0, ... reede = 4. Nadalavahetus tagastab null.
 function nadalapaevaIndeks(kuupaev) {
   const d = new Date(kuupaev + 'T12:00:00Z').getUTCDay();
   return d >= 1 && d <= 5 ? d - 1 : null;
 }
-
-function asendusteKast(read, kuupaev, pealkiri = 'Tänased muudatused', lisaklass = '') {
-  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-  const punktid = read.map(r =>
-    `<li><strong>${esc(r.silt)}</strong>` +
-    (r.perioodid.length ? ` (${r.perioodid.join('.-')}. tund)` : '') +
-    `: ${esc(r.tekst)}</li>`
-  ).join('');
-  return `<div class="subst-box${lisaklass ? ' ' + lisaklass : ''}"><h3>${esc(pealkiri)} ` +
-    `<span class="subst-date">${esc(kuupaev)}</span></h3><ul>${punktid}</ul></div>`;
-}
-
-// ---------------------------------------------------------------
-// Tulevased syndmused
-// ---------------------------------------------------------------
-
-// Mitu paeva ette syndmusi otsitakse. Iga paev on eraldi POST, seega on
-// see arv otse EduPage'i koormus: kuni 10 tookaeva x 2 oppekohta iga
-// jooksu kohta. Nadalavahetust ei kysita, aSc syndmused on tookaevadel.
-const ETTEVAATE_PAEVI = 14;
-const ETTEVAATE_KORRAGA = 4;
-
-const NADALAPAEV = ['E', 'T', 'K', 'N', 'R'];
 
 function lisaPaevi(kuupaev, n) {
   const d = new Date(kuupaev + 'T12:00:00Z');
@@ -265,6 +291,94 @@ function lyhiKuupaev(kuupaev) {
   const n = nadalapaevaIndeks(kuupaev);
   return `${n !== null ? NADALAPAEV[n] + ' ' : ''}${paev}.${kuu}`;
 }
+
+// Jooksva nadala esmaspaev. Nadalavahetusel on jooksev nadal labi ja
+// jooksvaks loeme jargmist: laupaeval tahab lugeja naha esmaspaeva.
+function jooksevEsmaspaev(kuupaev) {
+  const d = new Date(kuupaev + 'T12:00:00Z').getUTCDay(); // 0 = puhapaev
+  const nihe = d === 0 ? 1 : d === 6 ? 2 : 1 - d;
+  return lisaPaevi(kuupaev, nihe);
+}
+
+// "7.–11. september" voi "28. september – 2. oktoober"
+function nadalaSilt(nadal) {
+  const [a, b] = [nadal.paevad[0], nadal.paevad[4]].map(p => {
+    const [, kuu, paev] = p.split('-').map(Number);
+    return { paev, kuu: KUUD[kuu - 1] };
+  });
+  return a.kuu === b.kuu
+    ? `${a.paev}.–${b.paev}. ${a.kuu}`
+    : `${a.paev}. ${a.kuu} – ${b.paev}. ${b.kuu}`;
+}
+
+// Nadalad, mida leht kannab: jooksev ja NADALAID-1 jargmist.
+function nadalad(kuupaev) {
+  const esm = jooksevEsmaspaev(kuupaev);
+  return Array.from({ length: NADALAID }, (_, i) => {
+    const algus = lisaPaevi(esm, 7 * i);
+    return { paevad: Array.from({ length: 5 }, (_, d) => lisaPaevi(algus, d)) };
+  });
+}
+
+// ---------------------------------------------------------------
+// Asendused
+// ---------------------------------------------------------------
+
+// Loeb asendused antud paevade kohta. Iga paev on eraldi POST ja uhe
+// paeva ebaonnestumine ei tohi ulejaanuid ara votta, seega puutakse
+// viga paeva kaupa: ebaonnestunud paev jaab tuhjaks.
+async function laeAsendusedPaeviti(host, paevad) {
+  const tulemus = new Map();
+  for (let i = 0; i < paevad.length; i += KORRAGA) {
+    const osa = paevad.slice(i, i + KORRAGA);
+    const vastused = await Promise.all(osa.map(async p => {
+      try {
+        return [p, await laeAsendused(host, p)];
+      } catch (e) {
+        console.warn(`  HOIATUS: ${p} asendusi ei saanud (${e.message})`);
+        return [p, {}];
+      }
+    }));
+    for (const [p, paeva] of vastused) tulemus.set(p, paeva);
+  }
+  return tulemus;
+}
+
+// Rea jarjekord loetelus: paev, siis esimene tund.
+function reaJarjekord(a, b) {
+  return (a.paev || '').localeCompare(b.paev || '') ||
+    (a.perioodid[0] ?? 99) - (b.perioodid[0] ?? 99);
+}
+
+// Muudatuste kast. Rida kannab paeva siis, kui kast katab mitut paeva.
+// Pikk loetelu pakitakse kokku: esimesed KOKKU_ALATES rida jaavad
+// nahtavale, ulejaanud avanevad "+ veel N" alt.
+function asendusteKast(read, pealkiri, alapealkiri, lisaklass = '') {
+  const rida = r =>
+    `<li>` +
+    (r.paev ? `<span class="subst-day">${esc(lyhiKuupaev(r.paev))}</span> ` : '') +
+    `<strong>${esc(r.silt)}</strong>` +
+    (r.perioodid.length ? ` (${r.perioodid.join('.-')}. tund)` : '') +
+    `: ${esc(r.tekst)}</li>`;
+
+  const sorted = [...read].sort(reaJarjekord);
+  const nahtavad = sorted.length > KOKKU_ALATES ? sorted.slice(0, KOKKU_ALATES) : sorted;
+  const peidetud = sorted.slice(nahtavad.length);
+
+  let html = `<div class="subst-box${lisaklass ? ' ' + lisaklass : ''}"><h3>${esc(pealkiri)} ` +
+    `<span class="subst-date">${esc(alapealkiri)}</span></h3>` +
+    `<ul>${nahtavad.map(rida).join('')}</ul>`;
+  if (peidetud.length) {
+    const n = peidetud.length;
+    html += `<details class="subst-more"><summary>+ veel ${n} ${n === 1 ? 'muudatus' : 'muudatust'}</summary>` +
+      `<ul>${peidetud.map(rida).join('')}</ul></details>`;
+  }
+  return html + `</div>`;
+}
+
+// ---------------------------------------------------------------
+// Syndmused
+// ---------------------------------------------------------------
 
 // Uks syndmus tuleb korraga mitmes sektsioonis (nt "4.a" ja
 // "4.a ind plaan"), seega liidame need teksti jargi kokku.
@@ -295,36 +409,7 @@ function syndmusedPaevast(paeva, kuupaev) {
   return [...kaupa.values()];
 }
 
-// Syndmused jargmise kahe nadala sees. Asendusi siia ei vota: need
-// muutuvad iga paev ja ette naidatuna oleksid nad valeinfo.
-// Uhe paeva ebaonnestumine ei tohi ulejaanuid ara votta, seega
-// puutakse viga paeva kaupa.
-async function laeTulevasedSyndmused(host, kuupaev) {
-  const paevad = [];
-  for (let i = 1; i <= ETTEVAATE_PAEVI; i++) {
-    const p = lisaPaevi(kuupaev, i);
-    if (nadalapaevaIndeks(p) !== null) paevad.push(p);
-  }
-
-  const tulemus = [];
-  for (let i = 0; i < paevad.length; i += ETTEVAATE_KORRAGA) {
-    const osa = paevad.slice(i, i + ETTEVAATE_KORRAGA);
-    const vastused = await Promise.all(osa.map(async p => {
-      try {
-        return [p, await laeAsendused(host, p)];
-      } catch (e) {
-        console.warn(`  HOIATUS: ${p} sündmusi ei saanud (${e.message})`);
-        return [p, {}];
-      }
-    }));
-    for (const [p, paeva] of vastused) tulemus.push(...syndmusedPaevast(paeva, p));
-  }
-
-  return tulemus;
-}
-
 function tulemasKast(read) {
-  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const punktid = read.map(r =>
     `<li><strong>${esc(lyhiKuupaev(r.kuupaev))}</strong>: ${esc(r.tekst)}</li>`
   ).join('');
@@ -352,6 +437,92 @@ function syndmusedKlassile(syndmused, o, omaread) {
   );
 }
 
+// Klassi read uhel paeval: tema enda sektsioon pluss kooliylesed
+// syndmused, mis teda puudutavad. Asendused seotakse klassi nime jargi,
+// nagu EduPage neid grupeerib.
+function klassiRead(paeva, yld, o) {
+  const trimmitud = new Map(Object.entries(paeva).map(([k, v]) => [k.trim(), v]));
+  const omaread = trimmitud.get(String(o.short || '').trim()) ||
+    trimmitud.get(String(o.name || '').trim()) || [];
+  return [...syndmusedKlassile(yld, o, omaread), ...omaread];
+}
+
+// ---------------------------------------------------------------
+// Sama olem teises tunniplaanis
+// ---------------------------------------------------------------
+
+const KOGUD = { class: 'classes', teacher: 'teachers', room: 'classrooms' };
+
+function olemiNimi(tyyp, o) {
+  return String(tyyp === 'teacher' ? o.name : (o.short || o.name)).trim();
+}
+
+// Id kehtib siis, kui ta on teises plaanis sama nimega; muidu otsime
+// nime jargi. aSc hoiab id-d plaanist plaani, aga kindel see ei ole.
+function vaste(R, tyyp, o) {
+  const kogu = R.DB[KOGUD[tyyp]];
+  const sama = kogu[o.id];
+  if (sama && olemiNimi(tyyp, sama) === olemiNimi(tyyp, o)) return sama;
+  const nimi = olemiNimi(tyyp, o);
+  return Object.values(kogu).find(x => olemiNimi(tyyp, x) === nimi) || null;
+}
+
+// Lingid teise plaani lehel peavad viima samadele failidele, mis
+// esmase plaani jargi tehti. Seega tolgime teise plaani id-d esmase
+// plaani slugideks nime kaudu.
+function slugidPlaanile(R, Resmane, slugs) {
+  const tulemus = {};
+  for (const [tyyp, kogu] of Object.entries(KOGUD)) {
+    const nimeJargi = new Map(
+      Object.values(Resmane.DB[kogu]).map(o => [olemiNimi(tyyp, o), slugs[tyyp][o.id]])
+    );
+    tulemus[tyyp] = {};
+    for (const o of Object.values(R.DB[kogu])) {
+      const slug = nimeJargi.get(olemiNimi(tyyp, o));
+      if (slug) tulemus[tyyp][o.id] = slug;
+    }
+  }
+  return tulemus;
+}
+
+// ---------------------------------------------------------------
+// Nadalate vahel liikumine lehel
+// ---------------------------------------------------------------
+
+// Nadalad on lehel koik olemas, JS ainult peidab ja naitab. Fookus
+// liigub uue nadala pealkirjale: ekraanilugeja kuuleb, kuhu joudis, ja
+// nupud on sealt uhe Tabi kaugusel. Enne printimist avatakse
+// kokkupakitud loetelud.
+const NADALA_SKRIPT = `<script>
+(function () {
+  var nadalad = Array.prototype.slice.call(document.querySelectorAll('.week'));
+  function naita(i) {
+    nadalad.forEach(function (n, j) { n.hidden = j !== i; });
+    var h = nadalad[i].querySelector('.week-head h3');
+    if (h) h.focus();
+  }
+  nadalad.forEach(function (n, i) {
+    var eelmine = n.querySelector('.week-prev');
+    var jargmine = n.querySelector('.week-next');
+    if (eelmine && !eelmine.disabled) eelmine.addEventListener('click', function () { naita(i - 1); });
+    if (jargmine && !jargmine.disabled) jargmine.addEventListener('click', function () { naita(i + 1); });
+  });
+  window.addEventListener('beforeprint', function () {
+    document.querySelectorAll('details.subst-more').forEach(function (d) { d.open = true; });
+  });
+})();
+</script>`;
+
+function nadalaPais(nadal, i, mituPlaani) {
+  const vihje = i === 0 ? 'see nädal' : i === 1 ? 'järgmine nädal' : '';
+  return `<div class="week-head">` +
+    `<button type="button" class="week-btn week-prev print-hide" aria-label="Eelmine nädal"${i === 0 ? ' disabled' : ''}>‹</button>` +
+    `<h3 tabindex="-1">${esc(nadalaSilt(nadal))}${vihje ? ` <span class="week-hint">${vihje}</span>` : ''}</h3>` +
+    `<button type="button" class="week-btn week-next print-hide" aria-label="Järgmine nädal"${i === NADALAID - 1 ? ' disabled' : ''}>›</button>` +
+    (mituPlaani ? `<span class="week-tt">Tunniplaan: ${esc(nadal.tp.text)}</span>` : '') +
+    `</div>`;
+}
+
 // ---------------------------------------------------------------
 // Juurleht
 // ---------------------------------------------------------------
@@ -360,7 +531,6 @@ function syndmusedKlassile(syndmused, o, omaread) {
 // Kirjutatakse alles parast oppekohtade genereerimist, sest iga
 // oppekoha kaust kustutatakse ja tehakse jooksu alguses uuesti.
 function kirjutaJuurLeht(R, seisud) {
-  const esc = t => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const juur = join(HERE, 'dist');
   mkdirSync(join(juur, 'assets'), { recursive: true });
   writeFileSync(join(juur, 'assets/style.css'), R.getExportCss());
@@ -414,11 +584,30 @@ async function genereeri(votmed, kuupaev) {
     const kool = KOOLID[votme];
     if (!kool) throw new Error(`Tundmatu kool: ${votme}`);
 
-    const tp = await leiaViimaneTunniplaan(kool.host);
-    const T = await laeAndmed(kool.host, tp.tt_num);
+    // Igale nadalale oma plaan. Enamasti on see koigil sama, aga kui
+    // kool avaldab uue plaani jargmisest esmaspaevast, peab jooksev
+    // nadal naitama veel vana.
+    const tunniplaanid = await laeTunniplaanid(kool.host);
+    const nadalaList = nadalad(kuupaev);
+    for (const n of nadalaList) n.tp = valiTunniplaan(tunniplaanid, n);
+
+    const renderdajad = new Map();
+    for (const n of nadalaList) {
+      if (!renderdajad.has(n.tp.tt_num)) {
+        renderdajad.set(n.tp.tt_num, await laeRenderdajaPlaanile(kool.host, n.tp));
+      }
+      n.R = renderdajad.get(n.tp.tt_num);
+    }
+    const mituPlaani = renderdajad.size > 1;
+
+    // Esmane plaan on jooksva nadala oma: sellest tulevad olemid, failid
+    // ja lingid.
+    const tp = nadalaList[0].tp;
+    const R = nadalaList[0].R;
+    viimaneR = R;
 
     // Aegunud tunniplaani avaldamine on hullem kui mitte midagi avaldada.
-    const lopp = kehtivuseLopp(T);
+    const lopp = kehtivuseLopp(R.T);
     const aegunud = Boolean(lopp && lopp < kuupaev);
     if (aegunud) {
       console.warn(
@@ -427,44 +616,35 @@ async function genereeri(votmed, kuupaev) {
         `  Kool ei ole veel uut plaani avaldanud. Neid faile EI TOHI kodulehele panna.\n`
       );
     }
+    seisud[votme] = { aegunud, lopp };
 
-    const paev = nadalapaevaIndeks(kuupaev);
-    let asendused = {};
-    if (paev === null) {
-      console.log(`  (${kuupaev} on nädalavahetus, asendusi ei laeta)`);
-    } else {
-      try {
-        asendused = await laeAsendused(kool.host, kuupaev);
-      } catch (e) {
-        // Asenduste ebaonnestumine ei tohi tunniplaani avaldamist blokeerida.
-        console.warn(`  HOIATUS: asendusi ei saanud (${e.message}), tunniplaan tehakse ilma nendeta`);
-      }
-    }
+    // Asendused tanasest viimase nadala reedeni. Moodunud paevi ei kysi:
+    // asendusplaan on tuleviku, mitte ajaloo jaoks, ja iga paev on
+    // EduPage'ile eraldi paring.
+    const paevad = nadalaList.flatMap(n => n.paevad).filter(p => p >= kuupaev);
+    const viimanePaev = paevad[paevad.length - 1];
+    const asendusedPaeviti = await laeAsendusedPaeviti(kool.host, paevad);
 
     // Kooliylesed syndmused tulevad omaette sektsioonis, mille paise ei ole
     // klassi nimi. Ilma eraldi kasitluseta ei leiaks neid ukski klass ja
     // aktus kaoks vaikselt ara.
-    const yldsyndmused = asendused[SYNDMUSTE_SEKTSIOON] || [];
-    delete asendused[SYNDMUSTE_SEKTSIOON];
-
-    // Ettevaade kaib ka nadalavahetusel: pyhapaeval on jargmise nadala
-    // syndmused just see, mida keegi vaadata tahab.
-    let tulevased = [];
-    try {
-      tulevased = await laeTulevasedSyndmused(kool.host, kuupaev);
-    } catch (e) {
-      console.warn(`  HOIATUS: tulevasi sündmusi ei saanud (${e.message})`);
+    const yldPaeviti = new Map();
+    for (const [p, paeva] of asendusedPaeviti) {
+      yldPaeviti.set(p, paeva[SYNDMUSTE_SEKTSIOON] || []);
+      delete paeva[SYNDMUSTE_SEKTSIOON];
     }
 
-    const R = laeRenderdaja();
-    viimaneR = R;
-    seisud[votme] = { aegunud, lopp };
-    teisendaDB(T, R.DB);
-    // Paarid tuleb tunniplaan.html-i enda loogikast, mitte siit uuesti
-    // kirjutatuna - muidu lahevad vidin ja genereeritud leht lahku.
-    R.guessPeriodPairs();
-    R.seaUksik(SINGLE_MIN);
-    R.seaTopelt(DOUBLE_MIN);
+    const tanased = yldPaeviti.get(kuupaev) || [];
+
+    // Avalehe ettevaade: syndmused parast tanast, ETTEVAATE_PAEVI ulatuses.
+    const ettevaateLopp = lisaPaevi(kuupaev, ETTEVAATE_PAEVI);
+    const tulevased = [];
+    for (const p of paevad) {
+      if (p > kuupaev && p <= ettevaateLopp) {
+        const paeva = { ...asendusedPaeviti.get(p), [SYNDMUSTE_SEKTSIOON]: yldPaeviti.get(p) };
+        tulevased.push(...syndmusedPaevast(paeva, p));
+      }
+    }
 
     const klassid = Object.values(R.DB.classes);
     const opetajad = Object.values(R.DB.teachers);
@@ -475,6 +655,9 @@ async function genereeri(votmed, kuupaev) {
       teacher: R.uniqueSlugs(opetajad, t => (t.firstname + '-' + t.lastname).trim() || t.name),
       room: R.uniqueSlugs(ruumid, r => r.short || r.name),
     };
+    for (const n of nadalaList) {
+      n.slugs = n.R === R ? slugs : slugidPlaanile(n.R, R, slugs);
+    }
 
     const juur = join(HERE, kool.valjund);
     rmSync(juur, { recursive: true, force: true });
@@ -485,75 +668,94 @@ async function genereeri(votmed, kuupaev) {
     const indexHtml = R.buildIndexPage(slugs).replace(
       '<header class="page-header"><h1>Tunniplaan</h1></header>',
       '<header class="page-header"><h1>Tunniplaan</h1></header>' +
-        paiseRiba(kool, tp, lopp, kuupaev, aegunud) +
+        paiseRiba(kool, tp, lopp, kuupaev, viimanePaev, aegunud) +
         // Kooliylene syndmus puudutab kogu maja, seega on ta ka oppekoha
         // avalehel, mitte ainult uksikute klasside lehtedel.
-        (yldsyndmused.length
-          ? asendusteKast(yldsyndmused, kuupaev, 'Täna koolis', 'subst-box-event')
+        (tanased.length
+          ? asendusteKast(tanased, 'Täna koolis', kuupaev, 'subst-box-event')
           : '') +
         (tulevased.length ? tulemasKast(tulevased) : '')
     );
     writeFileSync(join(juur, 'index.html'), indexHtml);
 
-    const asendusedTrim = new Map(
-      Object.entries(asendused).map(([k, v]) => [k.trim(), v])
-    );
+    // Uks nadal uhe olemi lehel: muudatuste kast ja tabel. Margised
+    // tabelis ja kast on ainult klassidel, nagu EduPage asendusi jagab.
+    const nadalaOsa = (n, i, tyyp, o) => {
+      const olem = vaste(n.R, tyyp, o);
+      const read = [];
+      const cells = new Map();
+      if (tyyp === 'class') {
+        n.paevad.forEach((p, d) => {
+          if (!asendusedPaeviti.has(p)) return;
+          for (const r of klassiRead(asendusedPaeviti.get(p), yldPaeviti.get(p) || [], o)) {
+            read.push({ ...r, paev: p });
+            for (const per of r.perioodid) cells.set(`${d}:${per}`, r);
+          }
+        });
+      }
 
-    let muudetud = 0;
+      n.R.seaAsendused(cells.size ? cells : null);
+      n.R.seaNadal(n.paevad.map(p => ({
+        date: lyhiKuupaev(p).slice(2),
+        past: p < kuupaev,
+        today: p === kuupaev,
+      })));
+      const tabel = olem
+        ? n.R.buildTimetableTable(tyyp, olem.id, n.slugs)
+        : '<div class="empty-state">Selle nädala tunniplaanis seda valikut ei ole.</div>';
+      n.R.seaAsendused(null);
+      n.R.seaNadal(null);
+
+      let kast = '';
+      if (read.length) {
+        // Punane kast tahendab, et tunniplaan ei kehti nii, nagu ta lehel
+        // seisab. Kui klassil on ainult syndmused, ei ole midagi punast
+        // teatada, ja kast on sama kollane nagu avalehel.
+        const ainultSyndmused = read.every(r => r.tyyp.startsWith('event'));
+        kast = ainultSyndmused
+          ? asendusteKast(read, 'Sündmused', nadalaSilt(n), 'subst-box-event')
+          : asendusteKast(read, 'Muudatused', nadalaSilt(n));
+      }
+
+      return {
+        muudetud: read.length > 0,
+        html: `<section class="week" data-week="${n.paevad[0]}" aria-label="${esc(nadalaSilt(n))}"${i ? ' hidden' : ''}>` +
+          nadalaPais(n, i, mituPlaani) + kast + tabel + `</section>`,
+      };
+    };
+
+    const muudetud = new Set();
     const kirjuta = (kaust, tyyp, olemid, nimi) => {
       for (const o of olemid) {
-        // Asendused seotakse klassi nime jargi, nagu EduPage neid grupeerib.
-        // NB! aSc-s on mone klassi nimes lopus tuhik ("1.v "), asenduste
-        // lehel mitte, seega vordleme trimmitud kujul.
-        const omaread = tyyp === 'class' && paev !== null
-          ? (asendusedTrim.get(String(o.short || '').trim()) ||
-             asendusedTrim.get(String(o.name || '').trim()) || [])
-          : [];
-        const read = tyyp === 'class' && paev !== null
-          ? [...syndmusedKlassile(yldsyndmused, o, omaread), ...omaread]
-          : [];
-
-        if (read.length) {
-          const cells = new Map();
-          for (const r of read) {
-            for (const per of r.perioodid) cells.set(`${paev}:${per}`, r);
-          }
-          R.seaAsendused(cells);
-          muudetud++;
-        } else {
-          R.seaAsendused(null);
-        }
+        const osad = nadalaList.map((n, i) => nadalaOsa(n, i, tyyp, o));
+        if (osad.some(x => x.muudetud)) muudetud.add(o.id);
 
         const omaTulevased = tyyp === 'class' ? tulemasKlassile(tulevased, o) : [];
 
-        let body = R.buildTimetableHtml(tyyp, o.id, slugs);
-        if (omaTulevased.length) body = tulemasKast(omaTulevased) + body;
-        if (read.length) {
-          // Punane kast tahendab, et tunniplaan ei kehti nii, nagu ta lehel
-          // seisab. Kui klassil on ainult syndmused, ei ole midagi punast
-          // teatada, ja kast on sama kollane nagu avalehel.
-          const ainultSyndmused = read.every(r => r.tyyp.startsWith('event'));
-          body = ainultSyndmused
-            ? asendusteKast(read, kuupaev, 'Täna koolis', 'subst-box-event') + body
-            : asendusteKast(read, kuupaev) + body;
-        }
+        const body = R.buildTimetableTitle(tyyp, o.id) +
+          (omaTulevased.length ? tulemasKast(omaTulevased) : '') +
+          `<noscript><style>.week[hidden]{display:block}</style></noscript>` +
+          osad.map(x => x.html).join('') +
+          NADALA_SKRIPT;
 
         const fail = slugs[tyyp][o.id] + '.html';
         writeFileSync(join(juur, kaust, fail), R.wrapInHtmlPage(nimi(o), body, '../assets/style.css'));
       }
-      R.seaAsendused(null);
     };
     kirjuta('klass', 'class', klassid, c => c.name);
     kirjuta('opetaja', 'teacher', opetajad, t => t.name);
     kirjuta('ruum', 'room', ruumid, r => r.name);
 
+    const plaanid = [...new Set(nadalaList.map(n => `nr ${n.tp.tt_num} alates ${n.tp.datefrom} (${n.tp.text})`))];
     console.log(
       `${kool.nimi}\n` +
-      `  tunniplaan nr ${tp.tt_num}, kehtib alates ${tp.datefrom} (${tp.text})\n` +
+      `  tunniplaan ${plaanid.join('; ')}\n` +
       `  ${klassid.length} klassi, ${opetajad.length} õpetajat, ${ruumid.length} ruumi, ` +
       `${R.DB.cards.length} kaarti\n` +
-      `  ${muudetud} klassi tänaste muudatustega (${kuupaev}), ` +
-      `${yldsyndmused.length} kooliülest sündmust, ` +
+      `  ${NADALAID} nädalat (${nadalaList[0].paevad[0]} kuni ${viimanePaev}), ` +
+      `asendused ${paevad.length} päeva kohta, ` +
+      `${muudetud.size} klassi muudatustega, ` +
+      `${tanased.length} kooliülest sündmust täna, ` +
       `${tulevased.length} tulevast sündmust ${ETTEVAATE_PAEVI} päeva sees\n` +
       `  -> ${kool.valjund}/`
     );

@@ -40,6 +40,10 @@ concurrency:
 
 jobs:
   genereeri:
+    # Cron jookseb ainult live repos. Forkis (dev) kaivitab genereerimise
+    # push ja kasitsi kaivitamine; muidu kysiks kaks repot EduPage'i
+    # iga 5 min tagant.
+    if: github.event_name != 'schedule' || github.repository == 'Kivioli-Riigikool/tunniplaan'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
